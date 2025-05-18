@@ -1,9 +1,10 @@
 from django.shortcuts import render
 from rest_framework import generics,status
 from rest_framework.response import Response
+from django.shortcuts import render, redirect
 
 # Create your views here.
-class EditorView(generics.GenericAPIView):
-    def get(self, request):
+def editor(request):
+    
         # Render the editor template
-        return render(request, 'editor/editor.html')
+        return render(request, 'editor.html')
