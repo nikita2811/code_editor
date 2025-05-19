@@ -1,51 +1,32 @@
-import os, uuid, subprocess
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
+# executor/views.py
+from django.http import StreamingHttpResponse
+from .utils.docker_runner import execute_in_container,get_docker_client
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 
-@api_view(['POST'])
-def run_code(request):
-    code = request.data.get("code", "")
-    if not code:
-        return Response({"error": "No code provided"}, status=400)
-
-    temp_dir = f"/tmp/code_{uuid.uuid4()}"
-    os.makedirs(temp_dir, exist_ok=True)
-
-    filepath = os.path.join(temp_dir, "main.py")
-   
-    with open(filepath, "w") as f:
-        f.write("print('Hello from Docker!')")
-     # Normalize path for Docker
-    docker_path = os.path.normpath(temp_dir).replace('\\', '/')
-    try:
-        
-        result = subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "-v", f"{docker_path}:/code",
-                "-w", "/code",
-                "python:3.11",
-                "python","main.py"
-            ],
-            capture_output=True,
-            timeout=30
+@csrf_exempt
+@require_POST
+def execute_docker(request):
+    code = request.POST.get('code', '')
+     # Test Docker connection first
+    docker_client = get_docker_client()
+    docker_client.ping()
+    
+    if not code.strip():
+        return StreamingHttpResponse(
+            "Error: No code provided\n",
+            content_type='text/plain'
         )
-        print(result)
-
-        return Response({
-            "stdout": result.stdout.decode(),
-            "stderr": result.stderr.decode(),
-        })
-
-    except subprocess.TimeoutExpired:
-        return Response({"error": "Execution timed out"}, status=408)
-
-    except Exception as e:
-        return Response({"error": str(e)}, status=500)
-
-    finally:
+    
+    def stream_output():
         try:
-            os.remove(filepath)
-            os.rmdir(temp_dir)
-        except:
-            pass
+            for output in execute_in_container(code):
+                yield output
+            yield "\nExecution completed\n"
+        except Exception as e:
+            yield f"\nError: {str(e)}\n"
+    
+    return StreamingHttpResponse(
+        stream_output(),
+        content_type='text/plain'
+    )
