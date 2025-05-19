@@ -66,7 +66,6 @@ function runCode() {
 
   axios.post('http://localhost:8000/editor/code/', {
     code,
-    language: language.value
   })
     .then(res => {
       const { stdout, stderr } = res.data

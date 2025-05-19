@@ -1,72 +1,51 @@
-import subprocess
-import tempfile
+import os, uuid, subprocess
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework import status
-import docker
 
-
-LANG_TO_IMAGE = {
-    "python": "python:3",
-    "javascript": "node",
-    "php": "php",
-}
-
-
-client = docker.from_env()
-container = client.containers.run(
-    image=LANG_TO_IMAGE[language],
-    command=get_run_command(language),
-    volumes={f.name: {'bind': '/code', 'mode': 'ro'}},
-    remove=True,
-    stdout=True,
-    stderr=True,
-    timeout=10
-)
-result = container.decode('utf-8')
-
-@api_view(["POST"])
+@api_view(['POST'])
 def run_code(request):
-    code = request.data.get("code")
-    language = request.data.get("language")
+    code = request.data.get("code", "")
+    if not code:
+        return Response({"error": "No code provided"}, status=400)
 
-    if language not in LANG_TO_IMAGE:
-        return Response({"error": "Unsupported language"}, status=400)
+    temp_dir = f"/tmp/code_{uuid.uuid4()}"
+    os.makedirs(temp_dir, exist_ok=True)
 
+    filepath = os.path.join(temp_dir, "main.py")
+   
+    with open(filepath, "w") as f:
+        f.write("print('Hello from Docker!')")
+     # Normalize path for Docker
+    docker_path = os.path.normpath(temp_dir).replace('\\', '/')
     try:
-        with tempfile.NamedTemporaryFile(mode="w+", suffix=get_suffix(language), delete=False) as f:
-            f.write(code)
-            f.flush()
-            client = docker.from_env()
-            container = client.containers.run(
-                image=LANG_TO_IMAGE[language],
-                command=get_run_command(language),
-                volumes={f.name: {'bind': '/code', 'mode': 'ro'}},
-                remove=True,
-                stdout=True,
-                stderr=True,
-                timeout=10
-            )
-            result = container.decode('utf-8')
+        
+        result = subprocess.run(
+            [
+                "docker", "run", "--rm",
+                "-v", f"{docker_path}:/code",
+                "-w", "/code",
+                "python:3.11",
+                "python","main.py"
+            ],
+            capture_output=True,
+            timeout=30
+        )
+        print(result)
 
         return Response({
-            "stdout": result.stdout,
-            "stderr": result.stderr
+            "stdout": result.stdout.decode(),
+            "stderr": result.stderr.decode(),
         })
 
     except subprocess.TimeoutExpired:
         return Response({"error": "Execution timed out"}, status=408)
 
-def get_suffix(lang):
-    return {
-        "python": ".py",
-        "javascript": ".js",
-        "php": ".php"
-    }[lang]
+    except Exception as e:
+        return Response({"error": str(e)}, status=500)
 
-def get_run_command(lang):
-    return {
-        "python": "python /code.py",
-        "javascript": "node /code.js",
-        "php": "php /code.php"
-    }[lang]
+    finally:
+        try:
+            os.remove(filepath)
+            os.rmdir(temp_dir)
+        except:
+            pass
