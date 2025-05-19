@@ -1,32 +1,61 @@
 # executor/views.py
-from django.http import StreamingHttpResponse
-from .utils.docker_runner import execute_in_container,get_docker_client
+from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
-
+import subprocess
+import tempfile
+import os
 @csrf_exempt
 @require_POST
-def execute_docker(request):
+def execute_python(request):
     code = request.POST.get('code', '')
-     # Test Docker connection first
-    docker_client = get_docker_client()
-    docker_client.ping()
+    filename = request.POST.get('filename', 'main.py')
     
-    if not code.strip():
-        return StreamingHttpResponse(
-            "Error: No code provided\n",
-            content_type='text/plain'
+    if not code:
+        return JsonResponse({'error': 'No code provided'}, status=400)
+    
+    try:
+        # Create a temporary file with the specified filename
+        with tempfile.NamedTemporaryFile(suffix='.py', mode='w+', delete=False) as tmp:
+            tmp.write(code)
+            tmp.flush()
+            tmp_path = tmp.name
+            
+        # Rename to requested filename for better error messages
+        os.rename(tmp_path, f"{tmp_path}_{filename.replace('/', '_')}")
+        tmp_path = f"{tmp_path}_{filename.replace('/', '_')}"
+        
+        result = subprocess.run(
+            ['python', tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=10
         )
-    
-    def stream_output():
+        
+        # Clean up
         try:
-            for output in execute_in_container(code):
-                yield output
-            yield "\nExecution completed\n"
-        except Exception as e:
-            yield f"\nError: {str(e)}\n"
-    
-    return StreamingHttpResponse(
-        stream_output(),
-        content_type='text/plain'
-    )
+            os.unlink(tmp_path)
+        except:
+            pass
+            
+        if result.returncode != 0:
+            return JsonResponse({
+                'output': result.stderr,
+                'error': True
+            })
+        
+        return JsonResponse({
+            'output': result.stdout,
+            'error': False
+        })
+        
+    except subprocess.TimeoutExpired:
+        return JsonResponse({
+            'output': f'Error: Execution timed out (10 seconds) on {filename}',
+            'error': True
+        })
+    except Exception as e:
+        return JsonResponse({
+            'output': f'Error in {filename}: {str(e)}',
+            'error': True
+        })
